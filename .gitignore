@@ -1,0 +1,11 @@
+/build/
+/build-*/
+/out/
+*.vtk
+*.csv
+*.log
+*.obj
+*.pdb
+*.ilk
+*.exe
+*.lib

@@ -1,0 +1,27 @@
+[settings]
+plane_mode plane_stress
+solver pcg
+tolerance 1.0e-10
+max_iterations 5000
+output invalid.vtk
+
+[materials]
+1 2.10e11 0.30 0.01
+
+[nodes]
+1 0.0 0.0
+2 1.0 0.0
+3 1.0 1.0
+4 0.0 1.0
+
+[elements]
+# Clockwise connectivity; check must report E_NONPOSITIVE_JACOBIAN.
+1 1 4 3 2 1
+
+[boundary]
+1 0.0 0.0
+4 0.0 0.0
+
+[loads]
+2 0.0 -1.0
+

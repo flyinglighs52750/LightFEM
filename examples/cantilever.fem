@@ -1,0 +1,37 @@
+# LightFEM example: 3 m x 1 m cantilever represented by two Q4 elements.
+
+[settings]
+plane_mode plane_stress
+solver pcg
+tolerance 1.0e-10
+max_iterations 5000
+reordering rcm
+output cantilever.vtk
+
+[materials]
+# id  E(Pa)   nu   thickness(m)
+1 2.10e11 0.30 0.01
+
+[nodes]
+# id  x(m)  y(m)
+1 0.0 0.0
+2 1.5 0.0
+3 3.0 0.0
+4 0.0 1.0
+5 1.5 1.0
+6 3.0 1.0
+
+[elements]
+# id  n1 n2 n3 n4 material_id; connectivity must be counter-clockwise.
+1 1 2 5 4 1
+2 2 3 6 5 1
+
+[boundary]
+# node_id ux uy; use free (or -) for an unconstrained component.
+1 0.0 0.0
+4 0.0 0.0
+
+[loads]
+# node_id fx(N) fy(N)
+3 0.0 -500.0
+6 0.0 -500.0
