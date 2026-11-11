@@ -120,7 +120,7 @@ python tools/gen_mesh.py --n 200 --assembly thread_local --threads 8 -o a_thread
 
 ## 图形界面
 
-`LightFEM Studio` 是独立的前后处理界面，负责几何草绘、材料/网格/边界/载荷设置与结果云图显示，本身不参与矩阵存储、装配与求解。界面只生成 `.fem` 文件并调用 `lightfem.exe`。本仓库收录求解内核源码；界面的 Windows 免安装包（v0.8.0）见 [Releases](https://github.com/flyinglighs52750/LightFEM/releases)。
+`LightFEM Studio` 是独立的前后处理界面，负责几何草绘、材料/网格/边界/载荷设置与结果云图显示，本身不参与矩阵存储、装配与求解。界面只生成 `.fem` 文件并调用 `lightfem.exe`。Windows 免安装包见 [dist/LightFEM-Studio-0.8.0-win64.zip](dist/LightFEM-Studio-0.8.0-win64.zip)，解压后双击 `LightFEM Studio.exe` 即可运行，无需安装。
 
 ## 许可证
 
