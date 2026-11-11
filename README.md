@@ -22,13 +22,32 @@ LightFEM 是面向二维小变形线弹性问题的轻量级有限元求解器�
 
 ## 构建
 
-在 Visual Studio 2022 Developer PowerShell 或具有 CMake 的终端中执行：
+需要 CMake ≥ 3.16 与支持 C++17 的编译器（MSVC 2019/2022、GCC 9+、Clang 10+）。
+
+最省事的方式是直接用仓库里的脚本，它会自己找 CMake，并在 Windows 下用 `vswhere` 定位 Visual Studio 的工具集：
+
+```bash
+./build.sh          # Linux / macOS / Git Bash
+build.bat           # Windows 命令行
+```
+
+也可以手动执行标准 CMake 流程：
 
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
+
+Linux 下把生成器和 `--config` 去掉即可：
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+ctest --test-dir build --output-on-failure
+```
+
+构建产物是 `build/lightfem.exe`（Windows）或 `build/lightfem`（Linux/macOS），同时在 `build/` 下生成 `lightfem_tests` 与 `lightfem_solver_tests` 两个测试程序。
 
 ## 检查或求解模型
 
