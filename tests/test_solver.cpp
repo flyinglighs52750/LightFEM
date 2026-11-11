@@ -267,7 +267,185 @@ void test_extended_load_input_and_equilibrium() {
                 "body and uniform edge traction must be assembled into global equilibrium");
 }
 
+
+void test_truss_member_matches_analytic_solution() {
+    // Single bar in axial tension: u = FL/(EA), sigma = F/A.
+    const char* tension = R"FEM(
+[settings]
+solver pcg
+tolerance 1e-13
+max_iterations 100
+[materials]
+1 210000000000 0.3 0.01
+[nodes]
+1 0 0
+2 1 0
+[trusses]
+1 1 2 1 1.0e-3
+[boundaries]
+1 fixed
+2 symmetry_y
+[loads]
+2 1000 0
+)FEM";
+    lightfem::Model model = parse_and_index(tension);
+    expect(model.trusses.size() == 1, "truss section must be parsed");
+    const lightfem::AnalysisResult result = lightfem::LinearElasticSolver{}.solve(model);
+    const double expected = 1000.0 * 1.0 / (2.1e11 * 1.0e-3);
+    expect_near(result.displacement[2], expected, 1.0e-18,
+                "bar axial displacement must equal FL/(EA)");
+    expect_near(result.element_results[0].field.stress[0], 1.0e6, 1.0e-6,
+                "bar axial stress must equal F/A");
+    expect_near(result.element_results[0].field.von_mises, 1.0e6, 1.0e-6,
+                "bar von Mises equals the axial stress magnitude");
+}
+
+void test_two_bar_truss_symmetric_load() {
+    // Symmetric two-bar truss, node 3 loaded downwards.
+    // N = P/(2 sin 45), vertical drop = P L /(2 E A sin^2 45).
+    const char* truss = R"FEM(
+[settings]
+solver pcg
+tolerance 1e-13
+max_iterations 100
+[materials]
+1 210000000000 0.3 0.01
+[nodes]
+1 0 0
+2 2 0
+3 1 1
+[trusses]
+1 1 3 1 1.0e-3
+2 2 3 1 1.0e-3
+[boundaries]
+1 fixed
+2 fixed
+[loads]
+3 0 -1000
+)FEM";
+    lightfem::Model model = parse_and_index(truss);
+    const lightfem::AnalysisResult result = lightfem::LinearElasticSolver{}.solve(model);
+    const double sin45 = std::sqrt(0.5);
+    const double expected_drop = 1000.0 * std::sqrt(2.0) / (2.0 * 2.1e11 * 1.0e-3 * sin45 * sin45);
+    expect_near(result.displacement[5], -expected_drop, 1.0e-18,
+                "two-bar truss tip displacement must match statics");
+    expect_near(std::abs(result.element_results[0].field.stress[0] + result.element_results[0].field.stress[1]),
+                1000.0 / (2.0 * sin45) / 1.0e-3, 1.0e-3,
+                "bar axial force must be P/(2 sin 45)");
+
+    // Mixed model: the bar must hand the whole load over to the plate.
+    const char* mixed = R"FEM(
+[settings]
+solver pcg
+tolerance 1e-13
+max_iterations 500
+[materials]
+1 210000000000 0.3 0.01
+[nodes]
+1 0 0
+2 1 0
+3 1 1
+4 0 1
+5 2 1
+[elements]
+1 1 2 3 4 1
+[trusses]
+7 3 5 1 1.0e-3
+[boundaries]
+1 fixed
+4 fixed
+[loads]
+5 1000 0
+)FEM";
+    lightfem::Model mixed_model = parse_and_index(mixed);
+    const lightfem::AnalysisResult mixed_result = lightfem::LinearElasticSolver{}.solve(mixed_model);
+    expect_near(mixed_result.element_results.back().field.stress[0], 1.0e6, 1.0e-3,
+                "bar attached to a plate must carry the applied nodal force");
+}
+
 }  // namespace
+
+// Structured nx by ny Q4 grid, clamped on the left edge and pulled down on the
+// right edge. Large enough that the block preconditioner forms several
+// subdomains and that the iteration counts differ between preconditioners.
+std::string grid_model(const int nx, const int ny) {
+    std::ostringstream text;
+    text << "[settings]\nplane_mode plane_stress\nsolver pcg\ntolerance 1e-12\n"
+         << "max_iterations 5000\nreordering none\noutput ignored.vtk\n"
+         << "[materials]\n1 1000000 0.25 1\n[nodes]\n";
+    const auto node_id = [nx](const int i, const int j) { return j * (nx + 1) + i + 1; };
+    for (int j = 0; j <= ny; ++j) {
+        for (int i = 0; i <= nx; ++i) {
+            text << node_id(i, j) << ' ' << static_cast<double>(i) / nx << ' '
+                 << static_cast<double>(j) / ny << '\n';
+        }
+    }
+    text << "[elements]\n";
+    int element_id = 1;
+    for (int j = 0; j < ny; ++j) {
+        for (int i = 0; i < nx; ++i) {
+            text << element_id++ << ' ' << node_id(i, j) << ' ' << node_id(i + 1, j) << ' '
+                 << node_id(i + 1, j + 1) << ' ' << node_id(i, j + 1) << " 1\n";
+        }
+    }
+    text << "[boundary]\n";
+    for (int j = 0; j <= ny; ++j) text << node_id(0, j) << " 0 0\n";
+    text << "[loads]\n";
+    for (int j = 0; j <= ny; ++j) text << node_id(nx, j) << " 0 -0.01\n";
+    return text.str();
+}
+
+void test_iterative_settings_agree() {
+    const std::string text = grid_model(6, 6);
+    lightfem::Model reference = parse_and_index(text);
+    const lightfem::AnalysisResult baseline = lightfem::LinearElasticSolver{}.solve(reference);
+    expect(baseline.solver.converged, "reference Jacobi-PCG run must converge");
+
+    struct Case {
+        const char* name;
+        const char* storage;
+        const char* preconditioner;
+        const char* split;
+        std::size_t nodes_per_subdomain;
+    };
+    const Case cases[] = {
+        {"csr+jacobi", "csr", "jacobi", "rcb", 1},
+        {"bsr+jacobi", "bsr", "jacobi", "rcb", 1},
+        {"csr+ic0", "csr", "ic0", "rcb", 1},
+        {"bsr+ic0", "bsr", "ic0", "rcb", 1},
+        {"bsr+block-rcb", "bsr", "block", "rcb", 2},
+        {"bsr+block-chunk", "bsr", "block", "chunk", 4},
+    };
+    for (const Case& item : cases) {
+        lightfem::Model model = parse_and_index(text);
+        model.settings.storage = item.storage;
+        model.settings.preconditioner = item.preconditioner;
+        model.settings.subdomain_split = item.split;
+        model.settings.subdomain_nodes = item.nodes_per_subdomain;
+        const lightfem::AnalysisResult result = lightfem::LinearElasticSolver{}.solve(model);
+        expect(result.solver.converged, std::string(item.name) + " must converge");
+        // Every variant solves the same system, so the displacement field has to
+        // match the reference to solver accuracy; only the cost may differ.
+        for (std::size_t i = 0; i < result.displacement.size(); ++i) {
+            expect_near(result.displacement[i], baseline.displacement[i], 1.0e-9,
+                        std::string(item.name) + " must reproduce the reference displacement");
+        }
+        if (std::string(item.preconditioner) == "ic0") {
+            expect(result.solver.iterations < baseline.solver.iterations / 2,
+                   std::string(item.name) + " should need far fewer iterations than Jacobi");
+            expect(result.solver.storage == item.storage, "storage label must be reported back");
+        }
+        if (std::string(item.preconditioner) == "block") {
+            expect(result.solver.subdomains > 1, "block preconditioner must report its subdomains");
+            expect(result.solver.capture_ratio > 0.0,
+                   "block preconditioner must report a positive capture ratio");
+        }
+        if (std::string(item.storage) == "bsr") {
+            expect(result.solver.matrix_bytes_per_matvec > 0,
+                   "block storage must report its per-product footprint");
+        }
+    }
+}
 
 int main() {
     test_q4_stiffness_and_constant_strain();
@@ -276,6 +454,9 @@ int main() {
     test_rcm_preserves_solution_and_improves_scrambled_pattern();
     test_parallel_assembly_strategies_match_serial();
     test_extended_load_input_and_equilibrium();
+    test_truss_member_matches_analytic_solution();
+    test_two_bar_truss_symmetric_load();
+    test_iterative_settings_agree();
     if (failures != 0) {
         std::cerr << failures << " solver test assertion(s) failed\n";
         return 1;

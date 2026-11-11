@@ -13,6 +13,10 @@ max_iterations 5000
 reordering rcm
 assembly coloring
 threads 4
+storage bsr
+preconditioner ic0
+subdomain_split rcb
+subdomain_nodes 64
 output results.vtk
 deformation_scale 100.0
 csv_prefix results
@@ -25,6 +29,10 @@ csv_prefix results
 - `reordering`：`none`（默认）或 `rcm`。后者按节点图执行 Reverse Cuthill-McKee 重排序；
 - `assembly`：`serial`（默认）、`atomic`、`coloring` 或 `thread_local`；后三者要求构建时检测到 OpenMP；
 - `threads`：非负整数；`0`（默认）使用 OpenMP 运行时默认线程数，`1` 可用于串行对照；
+- `storage`：`csr`（默认）或 `bsr`。后者按节点把 (u, v) 两个自由度存成 2×2 块，每次矩阵向量积要搬运的索引从"每个非零元一个"降到"每个块一个"；
+- `preconditioner`：`jacobi`（默认）、`ic0` 或 `block`。`ic0` 是零填充的不完全 Cholesky，因子沿用下三角的稀疏模式，两次三角回代与一次矩阵向量积同阶；`block` 是按子域划分的块 Jacobi，每个子域做一次稠密 Cholesky，可用 `subdomain_split` 与 `subdomain_nodes` 调整；
+- `subdomain_split`：`rcb`（默认，按坐标递归二分）或 `chunk`（按节点编号连续切块）；
+- `subdomain_nodes`：`block` 预条件下每子域的节点数，正整数，默认 `64`；
 - `output`：结果文件名，建议使用 `.vtk`。
 - `deformation_scale`：VTK 中位移放大比例，非负数，`0` 表示不变形，默认 `1.0`；
 - `csv_prefix`：CSV 导出文件名前缀（输出 `<prefix>_nodes.csv` 与 `<prefix>_gauss_points.csv`），为空时由 VTK 输出文件主名推导。
@@ -61,6 +69,23 @@ csv_prefix results
 ```
 
 Q4 节点必须沿单元边界逆时针排列，四个节点不得重复。程序在单元中心和四个 2×2 高斯点检查 Jacobian，非正或接近零的 Jacobian 会被拒绝。
+
+## trusses
+
+```text
+[trusses]
+# id n1 n2 material_id area(m^2)
+1 5 9 1 1.0e-4
+```
+
+两节点杆单元，只有轴向刚度 `EA/L`，端点是铰接的（不传递弯矩）。`area` 是截面积，必须为有限正数；材料只取 `E`，`nu` 与 `thickness` 对杆不起作用。
+
+杆的节点可以直接复用 Q4 网格的节点，从而把杆「焊」在板上。需要注意两点：
+
+- 杆端节点在**垂直于杆轴**方向没有刚度，若该方向没有别的单元提供刚度，这一自由度是零能量模式。Jacobi 预条件会把它按单位阵处理，位移保持为零，结果通常仍可解释，但结构中真实存在的机构应当在建模阶段就补上支撑杆件。
+- 纯杆模型（没有 Q4 单元）时，二维刚体模态检查同样适用：至少要约束住两个平动和一个转动，否则报 `E_RIGID_BODY_MODES`。
+
+单元编号（`elements` 与 `trusses`）在 VTK/CSV 的 `element_id` 里共用同一个输出序列，建议全模型统一编号，避免两个不同类型共用同一编号造成误读。
 
 ## boundary
 

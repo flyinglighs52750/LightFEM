@@ -1,10 +1,15 @@
 #include "lightfem/vtk_writer.hpp"
 
+#include "lightfem/bench_mode.hpp"
+
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <fstream>
 #include <iomanip>
 #include <stdexcept>
+#include <string>
+#include <system_error>
 
 namespace lightfem {
 
@@ -16,6 +21,90 @@ void require_size(const std::vector<double>& values, const std::size_t expected,
     }
 }
 
+// Result export writes a few million numbers, so the formatting path dominates.
+// Two changes keep it cheap: numbers go through std::to_chars (shortest exact
+// round-trip form, roughly ten times faster than std::ostream with
+// setprecision(17)), and the text is collected in a one-megabyte buffer that is
+// flushed in bulk instead of being pushed through the stream one operator<< at
+// a time.
+class TextFile {
+public:
+    explicit TextFile(const std::string& path)
+        : path_(path),
+          output_(path, std::ios::binary),
+          legacy_(legacy_stage("LIGHTFEM_LEGACY_EXPORT")) {
+        if (!output_) throw std::runtime_error("cannot open output file: " + path);
+        if (legacy_) output_ << std::setprecision(17);
+        buffer_.reserve(kFlushSize + 4096);
+    }
+
+    void text(const char* value) {
+        if (legacy_) {
+            output_ << value;
+            return;
+        }
+        buffer_ += value;
+        flush_if_full();
+    }
+    void character(const char value) {
+        if (legacy_) {
+            output_ << value;
+            return;
+        }
+        buffer_ += value;
+        flush_if_full();
+    }
+    void integer(const std::size_t value) { write_integer(static_cast<long long>(value)); }
+    void integer(const int value) { write_integer(value); }
+    void integer(const long long value) { write_integer(value); }
+    void real(const double value) {
+        if (legacy_) {
+            output_ << value;
+            return;
+        }
+        char text[40];
+        const auto result = std::to_chars(text, text + sizeof(text), value);
+        if (result.ec != std::errc{}) throw std::runtime_error("failed to format a number for " + path_);
+        buffer_.append(text, result.ptr);
+        flush_if_full();
+    }
+
+    void finish() {
+        flush();
+        if (!output_) throw std::runtime_error("failed while writing " + path_);
+        output_.close();
+        if (!output_) throw std::runtime_error("failed while closing " + path_);
+    }
+
+private:
+    static constexpr std::size_t kFlushSize = std::size_t{1} << 20;
+
+    void write_integer(const long long value) {
+        if (legacy_) {
+            output_ << value;
+            return;
+        }
+        char text[24];
+        const auto result = std::to_chars(text, text + sizeof(text), value);
+        if (result.ec != std::errc{}) throw std::runtime_error("failed to format an integer for " + path_);
+        buffer_.append(text, result.ptr);
+        flush_if_full();
+    }
+    void flush_if_full() {
+        if (buffer_.size() >= kFlushSize) flush();
+    }
+    void flush() {
+        if (buffer_.empty()) return;
+        output_.write(buffer_.data(), static_cast<std::streamsize>(buffer_.size()));
+        buffer_.clear();
+    }
+
+    std::string path_;
+    std::ofstream output_;
+    bool legacy_;
+    std::string buffer_;
+};
+
 }  // namespace
 
 void write_vtk(const Model& model, const AnalysisResult& result, const std::string& path) {
@@ -23,97 +112,153 @@ void write_vtk(const Model& model, const AnalysisResult& result, const std::stri
     const std::size_t dofs = model.summary().dofs;
     require_size(result.displacement, dofs, "displacement");
     require_size(result.reaction, dofs, "reaction");
-    if (result.element_results.size() != model.elements.size()) {
+    const std::size_t total_cells = model.elements.size() + model.trusses.size();
+    if (result.element_results.size() != total_cells) {
         throw std::invalid_argument("VTK element result count does not match model elements");
     }
     if (result.node_results.size() != model.nodes.size()) {
         throw std::invalid_argument("VTK nodal result count does not match model nodes");
     }
 
-    std::ofstream output(path);
-    if (!output) throw std::runtime_error("cannot open VTK output file: " + path);
-    output << std::setprecision(17);
-    output << "# vtk DataFile Version 3.0\n"
-           << "LightFEM linear static Q4 result\n"
-           << "ASCII\n"
-           << "DATASET UNSTRUCTURED_GRID\n"
-           << "POINTS " << model.nodes.size() << " double\n";
+    TextFile output(path);
+    output.text("# vtk DataFile Version 3.0\n");
+    output.text("LightFEM linear static Q4 result\n");
+    output.text("ASCII\n");
+    output.text("DATASET UNSTRUCTURED_GRID\n");
+    output.text("POINTS ");
+    output.integer(model.nodes.size());
+    output.text(" double\n");
     for (const Node& node : model.nodes) {
-        output << node.position.x + model.settings.deformation_scale * result.displacement[node.dof_x] << ' '
-               << node.position.y + model.settings.deformation_scale * result.displacement[node.dof_y] << " 0\n";
+        output.real(node.position.x + model.settings.deformation_scale * result.displacement[node.dof_x]);
+        output.character(' ');
+        output.real(node.position.y + model.settings.deformation_scale * result.displacement[node.dof_y]);
+        output.text(" 0\n");
     }
 
-    output << "CELLS " << model.elements.size() << ' ' << 5 * model.elements.size() << "\n";
+    output.text("CELLS ");
+    output.integer(total_cells);
+    output.character(' ');
+    output.integer(5 * model.elements.size() + 3 * model.trusses.size());
+    output.character('\n');
     for (const Q4Element& element : model.elements) {
-        output << "4";
+        output.character('4');
         for (const int node_id : element.node_ids) {
             const Node* node = model.find_node(node_id);
             if (node == nullptr) throw std::logic_error("validated element references an unknown node");
-            output << ' ' << node->dof_x / 2;
+            output.character(' ');
+            output.integer(static_cast<std::size_t>(node->dof_x / 2));
         }
-        output << '\n';
+        output.character('\n');
     }
-    output << "CELL_TYPES " << model.elements.size() << "\n";
-    for (std::size_t i = 0; i < model.elements.size(); ++i) output << "9\n";  // VTK_QUAD
+    for (const TrussElement& truss : model.trusses) {
+        output.character('2');
+        for (const int node_id : truss.node_ids) {
+            const Node* node = model.find_node(node_id);
+            if (node == nullptr) throw std::logic_error("validated truss references an unknown node");
+            output.character(' ');
+            output.integer(static_cast<std::size_t>(node->dof_x / 2));
+        }
+        output.character('\n');
+    }
+    output.text("CELL_TYPES ");
+    output.integer(total_cells);
+    output.character('\n');
+    for (std::size_t i = 0; i < model.elements.size(); ++i) output.text("9\n");  // VTK_QUAD
+    for (std::size_t i = 0; i < model.trusses.size(); ++i) output.text("3\n");    // VTK_LINE
 
-    output << "POINT_DATA " << model.nodes.size() << "\n"
-           << "VECTORS displacement double\n";
+    output.text("POINT_DATA ");
+    output.integer(model.nodes.size());
+    output.text("\nVECTORS displacement double\n");
     for (const Node& node : model.nodes) {
-        output << result.displacement[node.dof_x] << ' ' << result.displacement[node.dof_y] << " 0\n";
+        output.real(result.displacement[node.dof_x]);
+        output.character(' ');
+        output.real(result.displacement[node.dof_y]);
+        output.text(" 0\n");
     }
     const std::array<const char*, 3> nodal_stress_names{{"nodal_stress_xx", "nodal_stress_yy", "nodal_stress_xy"}};
     for (std::size_t component = 0; component < 3; ++component) {
-        output << "SCALARS " << nodal_stress_names[component] << " double 1\nLOOKUP_TABLE default\n";
-        for (const NodeResult& node : result.node_results) output << node.stress[component] << '\n';
+        output.text("SCALARS ");
+        output.text(nodal_stress_names[component]);
+        output.text(" double 1\nLOOKUP_TABLE default\n");
+        for (const NodeResult& node : result.node_results) {
+            output.real(node.stress[component]);
+            output.character('\n');
+        }
     }
-    output << "SCALARS nodal_von_mises_in_plane double 1\nLOOKUP_TABLE default\n";
-    for (const NodeResult& node : result.node_results) output << node.von_mises << '\n';
-    output << "VECTORS reaction double\n";
-    for (const Node& node : model.nodes) {
-        output << result.reaction[node.dof_x] << ' ' << result.reaction[node.dof_y] << " 0\n";
+    output.text("SCALARS nodal_von_mises_in_plane double 1\nLOOKUP_TABLE default\n");
+    for (const NodeResult& node : result.node_results) {
+        output.real(node.von_mises);
+        output.character('\n');
     }
-    output << "SCALARS displacement_magnitude double 1\nLOOKUP_TABLE default\n";
+    output.text("VECTORS reaction double\n");
     for (const Node& node : model.nodes) {
-        output << std::hypot(result.displacement[node.dof_x], result.displacement[node.dof_y]) << '\n';
+        output.real(result.reaction[node.dof_x]);
+        output.character(' ');
+        output.real(result.reaction[node.dof_y]);
+        output.text(" 0\n");
+    }
+    output.text("SCALARS displacement_magnitude double 1\nLOOKUP_TABLE default\n");
+    for (const Node& node : model.nodes) {
+        output.real(std::hypot(result.displacement[node.dof_x], result.displacement[node.dof_y]));
+        output.character('\n');
     }
 
-    output << "CELL_DATA " << model.elements.size() << "\n"
-           << "SCALARS element_id int 1\nLOOKUP_TABLE default\n";
-    for (const ElementResult& element : result.element_results) output << element.element_id << '\n';
+    output.text("CELL_DATA ");
+    output.integer(total_cells);
+    output.text("\nSCALARS element_id int 1\nLOOKUP_TABLE default\n");
+    for (const ElementResult& element : result.element_results) {
+        output.integer(element.element_id);
+        output.character('\n');
+    }
 
     const std::array<const char*, 3> strain_names{{"strain_xx", "strain_yy", "strain_xy"}};
     const std::array<const char*, 3> stress_names{{"stress_xx", "stress_yy", "stress_xy"}};
     for (std::size_t component = 0; component < 3; ++component) {
-        output << "SCALARS " << strain_names[component] << " double 1\nLOOKUP_TABLE default\n";
+        output.text("SCALARS ");
+        output.text(strain_names[component]);
+        output.text(" double 1\nLOOKUP_TABLE default\n");
         for (const ElementResult& element : result.element_results) {
-            output << element.field.strain[component] << '\n';
+            output.real(element.field.strain[component]);
+            output.character('\n');
         }
     }
     for (std::size_t component = 0; component < 3; ++component) {
-        output << "SCALARS " << stress_names[component] << " double 1\nLOOKUP_TABLE default\n";
+        output.text("SCALARS ");
+        output.text(stress_names[component]);
+        output.text(" double 1\nLOOKUP_TABLE default\n");
         for (const ElementResult& element : result.element_results) {
-            output << element.field.stress[component] << '\n';
+            output.real(element.field.stress[component]);
+            output.character('\n');
         }
     }
-    output << "SCALARS von_mises_in_plane double 1\nLOOKUP_TABLE default\n";
-    for (const ElementResult& element : result.element_results) output << element.field.von_mises << '\n';
+    output.text("SCALARS von_mises_in_plane double 1\nLOOKUP_TABLE default\n");
+    for (const ElementResult& element : result.element_results) {
+        output.real(element.field.von_mises);
+        output.character('\n');
+    }
 
-    const std::array<const char*, 3> gauss_stress_names{{"stress_xx", "stress_yy", "stress_xy"}};
     for (std::size_t gp = 0; gp < 4; ++gp) {
         for (std::size_t component = 0; component < 3; ++component) {
-            output << "SCALARS " << gauss_stress_names[component] << "_gp" << (gp + 1)
-                   << " double 1\nLOOKUP_TABLE default\n";
+            output.text("SCALARS ");
+            output.text(stress_names[component]);
+            output.text("_gp");
+            output.integer(gp + 1);
+            output.text(" double 1\nLOOKUP_TABLE default\n");
             for (const ElementResult& element : result.element_results) {
-                output << element.gauss_points[gp].field.stress[component] << '\n';
+                output.real(element.gauss_points[gp].field.stress[component]);
+                output.character('\n');
             }
         }
-        output << "SCALARS von_mises_gp" << (gp + 1) << " double 1\nLOOKUP_TABLE default\n";
+        output.text("SCALARS von_mises_gp");
+        output.integer(gp + 1);
+        output.text(" double 1\nLOOKUP_TABLE default\n");
         for (const ElementResult& element : result.element_results) {
-            output << element.gauss_points[gp].field.von_mises << '\n';
+            output.real(element.gauss_points[gp].field.von_mises);
+            output.character('\n');
         }
     }
 
-    if (!output) throw std::runtime_error("failed while writing VTK output file: " + path);
+    output.finish();
 }
 
 CsvExportPaths write_csv_results(const Model& model, const AnalysisResult& result, const std::string& prefix) {
@@ -122,39 +267,72 @@ CsvExportPaths write_csv_results(const Model& model, const AnalysisResult& resul
     const std::size_t dofs = model.summary().dofs;
     require_size(result.displacement, dofs, "displacement");
     require_size(result.reaction, dofs, "reaction");
-    if (result.node_results.size() != model.nodes.size() || result.element_results.size() != model.elements.size()) {
+    if (result.node_results.size() != model.nodes.size() ||
+        result.element_results.size() != model.elements.size() + model.trusses.size()) {
         throw std::invalid_argument("CSV result count does not match model");
     }
     CsvExportPaths paths{prefix + "_nodes.csv", prefix + "_gauss_points.csv"};
-    std::ofstream nodes(paths.nodes);
-    if (!nodes) throw std::runtime_error("cannot open node CSV output: " + paths.nodes);
-    nodes << std::setprecision(17)
-          << "node_id,x,y,deformed_x,deformed_y,ux,uy,reaction_x,reaction_y,stress_xx,stress_yy,stress_xy,von_mises\n";
+
+    TextFile nodes(paths.nodes);
+    nodes.text(
+        "node_id,x,y,deformed_x,deformed_y,ux,uy,reaction_x,reaction_y,stress_xx,stress_yy,stress_xy,von_mises\n");
     for (std::size_t i = 0; i < model.nodes.size(); ++i) {
         const Node& node = model.nodes[i];
         const NodeResult& field = result.node_results[i];
-        nodes << node.id << ',' << node.position.x << ',' << node.position.y << ','
-              << node.position.x + model.settings.deformation_scale * result.displacement[node.dof_x] << ','
-              << node.position.y + model.settings.deformation_scale * result.displacement[node.dof_y] << ','
-              << result.displacement[node.dof_x] << ',' << result.displacement[node.dof_y] << ','
-              << result.reaction[node.dof_x] << ',' << result.reaction[node.dof_y] << ','
-              << field.stress[0] << ',' << field.stress[1] << ',' << field.stress[2] << ',' << field.von_mises
-              << '\n';
+        nodes.integer(node.id);
+        nodes.character(',');
+        nodes.real(node.position.x);
+        nodes.character(',');
+        nodes.real(node.position.y);
+        nodes.character(',');
+        nodes.real(node.position.x + model.settings.deformation_scale * result.displacement[node.dof_x]);
+        nodes.character(',');
+        nodes.real(node.position.y + model.settings.deformation_scale * result.displacement[node.dof_y]);
+        nodes.character(',');
+        nodes.real(result.displacement[node.dof_x]);
+        nodes.character(',');
+        nodes.real(result.displacement[node.dof_y]);
+        nodes.character(',');
+        nodes.real(result.reaction[node.dof_x]);
+        nodes.character(',');
+        nodes.real(result.reaction[node.dof_y]);
+        for (std::size_t component = 0; component < 3; ++component) {
+            nodes.character(',');
+            nodes.real(field.stress[component]);
+        }
+        nodes.character(',');
+        nodes.real(field.von_mises);
+        nodes.character('\n');
     }
-    std::ofstream gauss_points(paths.gauss_points);
-    if (!gauss_points) throw std::runtime_error("cannot open Gauss-point CSV output: " + paths.gauss_points);
-    gauss_points << std::setprecision(17)
-                 << "element_id,gauss_point,xi,eta,strain_xx,strain_yy,strain_xy,stress_xx,stress_yy,stress_xy,von_mises\n";
+    nodes.finish();
+
+    TextFile gauss_points(paths.gauss_points);
+    gauss_points.text(
+        "element_id,gauss_point,xi,eta,strain_xx,strain_yy,strain_xy,stress_xx,stress_yy,stress_xy,von_mises\n");
     for (const ElementResult& element : result.element_results) {
         for (std::size_t gp = 0; gp < 4; ++gp) {
             const GaussPointField& point = element.gauss_points[gp];
-            gauss_points << element.element_id << ',' << (gp + 1) << ',' << point.xi << ',' << point.eta << ','
-                         << point.field.strain[0] << ',' << point.field.strain[1] << ',' << point.field.strain[2] << ','
-                         << point.field.stress[0] << ',' << point.field.stress[1] << ',' << point.field.stress[2] << ','
-                         << point.field.von_mises << '\n';
+            gauss_points.integer(element.element_id);
+            gauss_points.character(',');
+            gauss_points.integer(static_cast<std::size_t>(gp + 1));
+            gauss_points.character(',');
+            gauss_points.real(point.xi);
+            gauss_points.character(',');
+            gauss_points.real(point.eta);
+            for (std::size_t component = 0; component < 3; ++component) {
+                gauss_points.character(',');
+                gauss_points.real(point.field.strain[component]);
+            }
+            for (std::size_t component = 0; component < 3; ++component) {
+                gauss_points.character(',');
+                gauss_points.real(point.field.stress[component]);
+            }
+            gauss_points.character(',');
+            gauss_points.real(point.field.von_mises);
+            gauss_points.character('\n');
         }
     }
-    if (!nodes || !gauss_points) throw std::runtime_error("failed while writing CSV results");
+    gauss_points.finish();
     return paths;
 }
 

@@ -1,0 +1,28 @@
+# 对称两杆桁架：节点 3 受竖向力，每杆轴力 N = P/(2 sin45)
+[settings]
+solver pcg
+tolerance 1.0e-12
+max_iterations 2000
+reordering none
+assembly serial
+csv_prefix truss_triangle
+
+[materials]
+1 2.1e11 0.30 0.01
+
+[nodes]
+1 0.0 0.0
+2 2.0 0.0
+3 1.0 1.0
+
+[trusses]
+# id n1 n2 material_id area
+1 1 3 1 1.0e-3
+2 2 3 1 1.0e-3
+
+[boundaries]
+1 fixed
+2 fixed
+
+[loads]
+3 0.0 -1000.0

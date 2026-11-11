@@ -247,4 +247,62 @@ std::array<GaussPointField, 4> q4_gauss_point_fields(
     return result;
 }
 
+std::array<std::size_t, 4> truss_dof_indices(const Model& model, const TrussElement& truss) {
+    if (!model.is_indexed()) {
+        throw std::logic_error("model must be indexed before truss DOFs are requested");
+    }
+    std::array<std::size_t, 4> dofs{};
+    for (std::size_t i = 0; i < 2; ++i) {
+        const Node* node = model.find_node(truss.node_ids[i]);
+        if (node == nullptr) {
+            throw std::logic_error("validated truss element references an unknown node");
+        }
+        dofs[2 * i] = node->dof_x;
+        dofs[2 * i + 1] = node->dof_y;
+    }
+    return dofs;
+}
+
+std::array<double, 16> truss_stiffness(const std::array<Vec2, 2>& coordinates, const double area,
+                                       const double young_modulus) {
+    const double dx = coordinates[1].x - coordinates[0].x;
+    const double dy = coordinates[1].y - coordinates[0].y;
+    const double length = std::sqrt(dx * dx + dy * dy);
+    if (!(length > 1.0e-12) || !std::isfinite(length)) {
+        throw std::runtime_error("truss stiffness evaluation received a zero-length member");
+    }
+    const double c = dx / length;
+    const double s = dy / length;
+    const double scale = young_modulus * area / length;
+    // k = EA/L * [c^2 cs -c^2 -cs; cs s^2 -cs -s^2; -c^2 -cs c^2 cs; -cs -s^2 cs s^2]
+    const double cc = c * c;
+    const double ss = s * s;
+    const double cs = c * s;
+    return {scale * cc,  scale * cs,  -scale * cc,  -scale * cs,
+            scale * cs,  scale * ss,  -scale * cs,  -scale * ss,
+            -scale * cc, -scale * cs, scale * cc,   scale * cs,
+            -scale * cs, -scale * ss, scale * cs,   scale * ss};
+}
+
+double truss_axial_strain(const std::array<Vec2, 2>& coordinates,
+                          const std::array<double, 4>& displacement) {
+    const double dx = coordinates[1].x - coordinates[0].x;
+    const double dy = coordinates[1].y - coordinates[0].y;
+    const double length = std::sqrt(dx * dx + dy * dy);
+    if (!(length > 1.0e-12) || !std::isfinite(length)) {
+        throw std::runtime_error("truss strain evaluation received a zero-length member");
+    }
+    const double c = dx / length;
+    const double s = dy / length;
+    // Axial elongation = (u2 - u1) . unit_direction
+    const double du = displacement[2] - displacement[0];
+    const double dv = displacement[3] - displacement[1];
+    return (du * c + dv * s) / length;
+}
+
+double truss_axial_stress(const std::array<Vec2, 2>& coordinates, const double young_modulus,
+                          const std::array<double, 4>& displacement) {
+    return young_modulus * truss_axial_strain(coordinates, displacement);
+}
+
 }  // namespace lightfem

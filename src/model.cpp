@@ -27,10 +27,13 @@ void Model::sort_and_index() {
               [](const Material& a, const Material& b) { return a.id < b.id; });
     std::sort(elements.begin(), elements.end(),
               [](const Q4Element& a, const Q4Element& b) { return a.id < b.id; });
+    std::sort(trusses.begin(), trusses.end(),
+              [](const TrussElement& a, const TrussElement& b) { return a.id < b.id; });
 
     require_unique_ids(nodes, "node");
     require_unique_ids(materials, "material");
     require_unique_ids(elements, "element");
+    require_unique_ids(trusses, "truss");
 
     rebuild_indices();
 }
@@ -44,8 +47,11 @@ void Model::index_with_node_order(const std::vector<int>& node_order) {
               [](const Material& a, const Material& b) { return a.id < b.id; });
     std::sort(elements.begin(), elements.end(),
               [](const Q4Element& a, const Q4Element& b) { return a.id < b.id; });
+    std::sort(trusses.begin(), trusses.end(),
+              [](const TrussElement& a, const TrussElement& b) { return a.id < b.id; });
     require_unique_ids(materials, "material");
     require_unique_ids(elements, "element");
+    require_unique_ids(trusses, "truss");
 
     std::unordered_map<int, Node> by_id;
     by_id.reserve(nodes.size());
@@ -116,7 +122,7 @@ const Q4Element* Model::find_element(const int id) const noexcept {
 
 ModelSummary Model::summary() const noexcept {
     return ModelSummary{nodes.size(), elements.size(), materials.size(), boundaries.size(), loads.size(),
-                        body_forces.size(), edge_loads.size(), 2 * nodes.size()};
+                        body_forces.size(), edge_loads.size(), 2 * nodes.size(), trusses.size()};
 }
 
 const char* to_string(const PlaneMode mode) noexcept {

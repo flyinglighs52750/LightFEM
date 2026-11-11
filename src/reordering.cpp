@@ -22,6 +22,10 @@ std::vector<int> reverse_cuthill_mckee(const Model& model) {
             }
         }
     }
+    for (const TrussElement& truss : model.trusses) {
+        adjacency[truss.node_ids[0]].insert(truss.node_ids[1]);
+        adjacency[truss.node_ids[1]].insert(truss.node_ids[0]);
+    }
 
     const auto by_degree_then_id = [&adjacency](const int left, const int right) {
         const std::size_t left_degree = adjacency.at(left).size();

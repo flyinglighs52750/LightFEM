@@ -25,6 +25,21 @@ struct GaussPointField {
 [[nodiscard]] std::array<std::size_t, 8> q4_dof_indices(const Model& model,
                                                          const Q4Element& element);
 
+// Returns [ux1, uy1, ux2, uy2] for a two-node bar.
+[[nodiscard]] std::array<std::size_t, 4> truss_dof_indices(const Model& model,
+                                                           const TrussElement& truss);
+
+// 4 x 4 axial stiffness EA/L expressed in global coordinates.
+[[nodiscard]] std::array<double, 16> truss_stiffness(const std::array<Vec2, 2>& coordinates,
+                                                     double area, double young_modulus);
+
+// Axial strain/stress of the bar, from its end-node displacements ordered as
+// [ux1, uy1, ux2, uy2]. Positive in tension.
+[[nodiscard]] double truss_axial_strain(const std::array<Vec2, 2>& coordinates,
+                                        const std::array<double, 4>& displacement);
+[[nodiscard]] double truss_axial_stress(const std::array<Vec2, 2>& coordinates, double young_modulus,
+                                        const std::array<double, 4>& displacement);
+
 // Computes the 8 x 8 stiffness matrix with 2 x 2 Gauss integration.
 [[nodiscard]] ElementMatrix q4_stiffness(const std::array<Vec2, 4>& coordinates,
                                          const Material& material, PlaneMode plane_mode);

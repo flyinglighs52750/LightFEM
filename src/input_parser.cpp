@@ -21,6 +21,7 @@ enum class Section {
     Nodes,
     Materials,
     Elements,
+    Trusses,
     Boundary,
     Loads,
     BodyForces,
@@ -122,6 +123,9 @@ Section parse_section(const std::string& name, const std::string& source, const 
     if (section == "nodes") return Section::Nodes;
     if (section == "materials") return Section::Materials;
     if (section == "elements") return Section::Elements;
+    if (section == "trusses" || section == "bars" || section == "rods" || section == "members") {
+        return Section::Trusses;
+    }
     if (section == "boundary" || section == "boundaries" || section == "dirichlet") {
         return Section::Boundary;
     }
@@ -215,6 +219,15 @@ Model InputParser::parse(std::istream& input, std::string source_name) const {
                     model.settings.assembly = lower(tokens[1]);
                 } else if (key == "threads") {
                     model.settings.threads = parse_size(tokens[1], source_name, line_number, "threads");
+                } else if (key == "storage") {
+                    model.settings.storage = lower(tokens[1]);
+                } else if (key == "preconditioner") {
+                    model.settings.preconditioner = lower(tokens[1]);
+                } else if (key == "subdomain_split") {
+                    model.settings.subdomain_split = lower(tokens[1]);
+                } else if (key == "subdomain_nodes") {
+                    model.settings.subdomain_nodes =
+                        parse_size(tokens[1], source_name, line_number, "subdomain_nodes");
                 } else if (key == "output") {
                     model.settings.output_file = tokens[1];
                 } else if (key == "deformation_scale") {
@@ -252,6 +265,15 @@ Model InputParser::parse(std::istream& input, std::string source_name) const {
                      parse_int(tokens[3], source_name, line_number, "n3"),
                      parse_int(tokens[4], source_name, line_number, "n4")},
                     parse_int(tokens[5], source_name, line_number, "material id"), line_number});
+                break;
+            case Section::Trusses:
+                require_count(tokens, 5, source_name, line_number, "id n1 n2 material_id area");
+                model.trusses.push_back(TrussElement{
+                    parse_int(tokens[0], source_name, line_number, "truss id"),
+                    {parse_int(tokens[1], source_name, line_number, "n1"),
+                     parse_int(tokens[2], source_name, line_number, "n2")},
+                    parse_int(tokens[3], source_name, line_number, "material id"),
+                    parse_double(tokens[4], source_name, line_number, "area"), line_number});
                 break;
             case Section::Boundary:
                 if (tokens.size() == 2) {

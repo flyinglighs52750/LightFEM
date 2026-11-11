@@ -1,5 +1,7 @@
 #include "lightfem/validation.hpp"
 
+#include "lightfem/bench_mode.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -109,13 +111,16 @@ std::size_t ValidationReport::warning_count() const noexcept {
 ValidationReport ModelValidator::validate(const Model& model) const {
     ValidationReport report;
 
-    if (model.nodes.size() < 4) report.error("E_TOO_FEW_NODES", "at least four nodes are required");
+    if (model.nodes.size() < 2) report.error("E_TOO_FEW_NODES", "at least two nodes are required");
     if (model.materials.empty()) report.error("E_NO_MATERIAL", "at least one material is required");
-    if (model.elements.empty()) report.error("E_NO_ELEMENT", "at least one Q4 element is required");
+    if (model.elements.empty() && model.trusses.empty()) {
+        report.error("E_NO_ELEMENT", "at least one Q4 element or truss member is required");
+    }
 
     validate_ids(model.nodes, "node", "E_DUPLICATE_NODE_ID", report);
     validate_ids(model.materials, "material", "E_DUPLICATE_MATERIAL_ID", report);
     validate_ids(model.elements, "element", "E_DUPLICATE_ELEMENT_ID", report);
+    validate_ids(model.trusses, "truss", "E_DUPLICATE_TRUSS_ID", report);
 
     std::unordered_map<int, const Node*> nodes;
     for (const Node& node : model.nodes) {
@@ -125,14 +130,40 @@ ValidationReport ModelValidator::validate(const Model& model) const {
         }
     }
 
-    for (std::size_t i = 0; i < model.nodes.size(); ++i) {
-        for (std::size_t j = i + 1; j < model.nodes.size(); ++j) {
-            if (std::abs(model.nodes[i].position.x - model.nodes[j].position.x) <= 1.0e-14 &&
-                std::abs(model.nodes[i].position.y - model.nodes[j].position.y) <= 1.0e-14) {
-                report.error("E_COINCIDENT_NODES",
-                             "nodes " + std::to_string(model.nodes[i].id) + " and " +
-                                 std::to_string(model.nodes[j].id) + " have coincident coordinates",
-                             model.nodes[j].source_line);
+    // Coincident-node detection. Comparing every pair is O(n^2) and dominated the
+    // whole run time once meshes reached tens of thousands of nodes (4.5 s of a
+    // 10 s run on 40k nodes). Sorting by x first turns it into an O(n log n)
+    // sweep: only nodes whose x separation is inside the tolerance can be
+    // coincident, so the inner loop advances a short window.
+    if (legacy_stage("LIGHTFEM_LEGACY_VALIDATE")) {
+        for (std::size_t i = 0; i < model.nodes.size(); ++i) {
+            for (std::size_t j = i + 1; j < model.nodes.size(); ++j) {
+                if (std::abs(model.nodes[i].position.x - model.nodes[j].position.x) <= 1.0e-14 &&
+                    std::abs(model.nodes[i].position.y - model.nodes[j].position.y) <= 1.0e-14) {
+                    report.error("E_COINCIDENT_NODES",
+                                 "nodes " + std::to_string(model.nodes[i].id) + " and " +
+                                     std::to_string(model.nodes[j].id) + " have coincident coordinates",
+                                 model.nodes[j].source_line);
+                }
+            }
+        }
+    } else {
+        std::vector<std::size_t> by_x(model.nodes.size());
+        for (std::size_t i = 0; i < by_x.size(); ++i) by_x[i] = i;
+        std::sort(by_x.begin(), by_x.end(), [&model](const std::size_t a, const std::size_t b) {
+            return model.nodes[a].position.x < model.nodes[b].position.x;
+        });
+        for (std::size_t a = 0; a < by_x.size(); ++a) {
+            const Node& left = model.nodes[by_x[a]];
+            for (std::size_t b = a + 1; b < by_x.size(); ++b) {
+                const Node& right = model.nodes[by_x[b]];
+                if (right.position.x - left.position.x > 1.0e-14) break;
+                if (std::abs(left.position.y - right.position.y) <= 1.0e-14) {
+                    report.error("E_COINCIDENT_NODES",
+                                 "nodes " + std::to_string(left.id) + " and " +
+                                     std::to_string(right.id) + " have coincident coordinates",
+                                 right.source_line);
+                }
             }
         }
     }
@@ -215,6 +246,55 @@ ValidationReport ModelValidator::validate(const Model& model) const {
                 const int b = element.node_ids[(i + 1) % 4];
                 adjacency[a].push_back(b);
                 adjacency[b].push_back(a);
+            }
+        }
+    }
+
+    for (const TrussElement& truss : model.trusses) {
+        if (truss.node_ids[0] == truss.node_ids[1]) {
+            report.error("E_REPEATED_TRUSS_NODE",
+                         "truss " + std::to_string(truss.id) +
+                             " must reference two distinct nodes: [" +
+                             std::to_string(truss.node_ids[0]) + ", " +
+                             std::to_string(truss.node_ids[1]) + "]",
+                         truss.source_line);
+        }
+        std::array<const Node*, 2> truss_nodes{{nullptr, nullptr}};
+        bool references_ok = true;
+        for (std::size_t i = 0; i < 2; ++i) {
+            const auto it = nodes.find(truss.node_ids[i]);
+            if (it == nodes.end()) {
+                report.error("E_UNKNOWN_TRUSS_NODE",
+                             "truss " + std::to_string(truss.id) + " references unknown node " +
+                                 std::to_string(truss.node_ids[i]),
+                             truss.source_line);
+                references_ok = false;
+            } else {
+                truss_nodes[i] = it->second;
+                referenced_nodes.insert(truss.node_ids[i]);
+            }
+        }
+        if (materials.find(truss.material_id) == materials.end()) {
+            report.error("E_UNKNOWN_MATERIAL",
+                         "truss " + std::to_string(truss.id) + " references unknown material " +
+                             std::to_string(truss.material_id),
+                         truss.source_line);
+        } else {
+            used_materials.insert(truss.material_id);
+        }
+        if (!std::isfinite(truss.area) || truss.area <= 0.0) {
+            report.error("E_INVALID_TRUSS_AREA", "truss cross-section area must be finite and positive",
+                         truss.source_line);
+        }
+        if (references_ok && truss.node_ids[0] != truss.node_ids[1]) {
+            const double dx = truss_nodes[1]->position.x - truss_nodes[0]->position.x;
+            const double dy = truss_nodes[1]->position.y - truss_nodes[0]->position.y;
+            if (!(std::sqrt(dx * dx + dy * dy) > 1.0e-12)) {
+                report.error("E_ZERO_LENGTH_TRUSS",
+                             "truss " + std::to_string(truss.id) + " has zero length", truss.source_line);
+            } else {
+                adjacency[truss.node_ids[0]].push_back(truss.node_ids[1]);
+                adjacency[truss.node_ids[1]].push_back(truss.node_ids[0]);
             }
         }
     }
@@ -365,9 +445,23 @@ ValidationReport ModelValidator::validate(const Model& model) const {
         report.error("E_UNSUPPORTED_REORDERING", "reordering must be none or rcm");
     }
     if (model.settings.assembly != "serial" && model.settings.assembly != "atomic" &&
-        model.settings.assembly != "coloring" && model.settings.assembly != "thread_local") {
+        model.settings.assembly != "coloring" && model.settings.assembly != "thread_local" &&
+        model.settings.assembly != "scan") {
         report.error("E_UNSUPPORTED_ASSEMBLY",
-                     "assembly must be serial, atomic, coloring, or thread_local");
+                     "assembly must be serial, atomic, coloring, thread_local, or scan");
+    }
+    if (model.settings.storage != "csr" && model.settings.storage != "bsr") {
+        report.error("E_UNSUPPORTED_STORAGE", "storage must be csr or bsr");
+    }
+    if (model.settings.preconditioner != "jacobi" && model.settings.preconditioner != "block" &&
+        model.settings.preconditioner != "ic0") {
+        report.error("E_UNSUPPORTED_PRECONDITIONER", "preconditioner must be jacobi, block, or ic0");
+    }
+    if (model.settings.subdomain_split != "rcb" && model.settings.subdomain_split != "chunk") {
+        report.error("E_UNSUPPORTED_SUBDOMAIN_SPLIT", "subdomain_split must be rcb or chunk");
+    }
+    if (model.settings.subdomain_nodes == 0) {
+        report.error("E_INVALID_SUBDOMAIN_SIZE", "subdomain_nodes must be at least 1");
     }
     if (model.settings.output_file.empty()) {
         report.error("E_EMPTY_OUTPUT", "output file name must not be empty");

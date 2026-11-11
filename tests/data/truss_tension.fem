@@ -1,0 +1,32 @@
+# 单根杆轴向拉伸：u = FL/(EA), sigma = F/A
+[settings]
+plane_mode plane_stress
+solver pcg
+tolerance 1.0e-12
+max_iterations 2000
+reordering none
+assembly serial
+output truss_tension.vtk
+csv_prefix truss_tension
+
+[materials]
+# id E(Pa) nu thickness(m)
+1 2.1e11 0.30 0.01
+
+[nodes]
+# id x y
+1 0.0 0.0
+2 1.0 0.0
+
+[trusses]
+# id n1 n2 material_id area(m^2)
+1 1 2 1 1.0e-3
+
+[boundaries]
+1 fixed
+# 杆不受弯，端部横向必须约束，否则存在零能量模式
+2 symmetry_y
+
+[loads]
+# node fx fy
+2 1000.0 0.0

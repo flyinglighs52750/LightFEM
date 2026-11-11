@@ -43,6 +43,16 @@ struct Q4Element {
     std::size_t source_line{0};
 };
 
+// Two-node axial bar. Resists only the member axial force: its end nodes are
+// free to rotate, which is the classical truss (pin-jointed) assumption.
+struct TrussElement {
+    int id{0};
+    std::array<int, 2> node_ids{{0, 0}};
+    int material_id{0};
+    double area{0.0};  // cross-section area (m^2)
+    std::size_t source_line{0};
+};
+
 struct DirichletBC {
     int node_id{0};
     std::optional<double> ux{};
@@ -89,6 +99,13 @@ struct SolverSettings {
     std::string reordering{"none"};
     std::string assembly{"serial"};
     std::size_t threads{0};  // 0: OpenMP runtime default; serial ignores this value.
+    // Iterative-phase choices. "csr" and "jacobi" reproduce a textbook
+    // preconditioned CG; the alternatives change how many bytes a product moves
+    // and how much of the matrix one preconditioner application captures.
+    std::string storage{"csr"};       // csr | bsr
+    std::string preconditioner{"jacobi"};  // jacobi | block
+    std::string subdomain_split{"rcb"};    // rcb | chunk
+    std::size_t subdomain_nodes{64};       // nodes per subdomain when preconditioner=block
     std::string output_file{"results.vtk"};
     double deformation_scale{1.0};
     std::string csv_prefix{};  // Empty: derive from VTK output file stem.
@@ -103,6 +120,7 @@ struct ModelSummary {
     std::size_t body_forces{0};
     std::size_t edge_loads{0};
     std::size_t dofs{0};
+    std::size_t trusses{0};
 };
 
 class Model {
@@ -110,6 +128,7 @@ public:
     std::vector<Node> nodes;
     std::vector<Material> materials;
     std::vector<Q4Element> elements;
+    std::vector<TrussElement> trusses;
     std::vector<DirichletBC> boundaries;
     std::vector<NodalLoad> loads;
     std::vector<BodyForce> body_forces;

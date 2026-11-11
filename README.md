@@ -89,5 +89,45 @@ LightFEM/
 ├─ src/                 实现与命令行入口
 ├─ tests/               无第三方依赖的自动测试
 ├─ examples/            合法和错误输入样例
+├─ tools/               算例生成脚本
 └─ docs/                输入格式说明
 ```
+
+## 复现论文实验
+
+学位论文第 4 章的性能实验全部由命令行版本测得，不经过图形界面。规模扫描用的结构化网格由 `tools/gen_mesh.py` 生成，无需手工建模：
+
+```powershell
+# 200×200 结构化网格：与论文 4.4 节同规模
+python tools/gen_mesh.py --n 200 -o mesh_200x200.fem
+.\build\Release\lightfem.exe solve mesh_200x200.fem mesh_200x200.vtk
+```
+
+该算例的输出与论文 4.4 节一致：`nodes=40401`、`elements=40000`、`dofs=80802`、`nnz=1444804`，`PROFILE` 行给出带宽 405→803、profile 32 522 001→42 949 601（表 4-3）。
+
+装配策略对比（表 4-4）通过命令行参数切换：
+
+```powershell
+python tools/gen_mesh.py --n 200 --assembly serial      --threads 8 -o a_serial.fem
+python tools/gen_mesh.py --n 200 --assembly atomic      --threads 8 -o a_atomic.fem
+python tools/gen_mesh.py --n 200 --assembly coloring    --threads 8 -o a_coloring.fem
+python tools/gen_mesh.py --n 200 --assembly thread_local --threads 8 -o a_thread_local.fem
+```
+
+逐个 `solve` 后读取 `TIMING` 行中的 `element_stiffness_ms`、`assembly_ms` 与 `pcg_ms`。论文中的数字是同批次 7 轮取中位数，绝对值随机器状态波动，只有同批次内可比。
+
+**注意**：不同批次之间不要比较绝对耗时；单元刚度计算、装配、PCG 三个阶段需要在同一进程批次内采集。
+
+## 图形界面
+
+`LightFEM Studio` 是独立的前后处理界面，负责几何草绘、材料/网格/边界/载荷设置与结果云图显示，本身不参与矩阵存储、装配与求解。界面只生成 `.fem` 文件并调用 `lightfem.exe`。本仓库收录求解内核源码；界面的 Windows 免安装包（v0.8.0）见 [Releases](https://github.com/flyinglighs52750/LightFEM/releases)。
+
+## 许可证
+
+MIT License，见 [LICENSE](LICENSE)。
+
+## 引用
+
+若在论文或报告中引用本工作，请标注：
+
+> 钟诺熙. 面向二维线弹性问题的轻量级有限元求解器设计——稀疏矩阵存储与装配优化[D]. 广州: 华南理工大学, 2026.

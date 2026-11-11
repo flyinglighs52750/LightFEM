@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(LightFEM VERSION 0.6.0 LANGUAGES CXX)
+project(LightFEM VERSION 0.8.0 LANGUAGES CXX)
 
 option(LIGHTFEM_BUILD_TESTS "Build LightFEM tests" ON)
 
@@ -11,6 +11,7 @@ add_library(lightfem_core
     src/element.cpp
     src/sparse.cpp
     src/reordering.cpp
+    src/precond.cpp
     src/solver.cpp
     src/vtk_writer.cpp
 )
