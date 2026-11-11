@@ -1,0 +1,15 @@
+# 统一换行符，避免脚本在跨平台协作中被破坏
+* text=auto
+
+*.sh    text eol=lf
+*.py    text eol=lf
+*.fem   text eol=lf
+*.md    text eol=lf
+*.txt   text eol=lf
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+*.zip   binary
+*.vtk   binary
+*.png   binary
+*.jpg   binary
